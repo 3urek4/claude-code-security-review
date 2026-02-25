@@ -8,7 +8,3 @@ This repository is a learning-focused fork of Anthropic's original project.
 - Purpose of this fork:
   - Understand the architecture and runtime flow of the action
   - Practice structured refactoring and policy-driven design
-  - Document the codebase in a way that is easier to learn
-
-For project breakdown docs, start at:
-- [docs/README.md](./docs/README.md)

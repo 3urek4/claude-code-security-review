@@ -12,8 +12,3 @@ This repository is a learning-focused fork of Anthropic's original project.
 
 - Learn how the security review action is structured end-to-end.
 - Practice architecture refactoring (pipeline, policy, and schema layers).
-- Maintain project documentation oriented toward codebase understanding.
-
-## Where to Start
-
-- Project breakdown index: [docs/README.md](./docs/README.md)

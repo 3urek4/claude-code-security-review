@@ -12,8 +12,3 @@
 
 - 学习该安全审查 Action 的端到端结构。
 - 练习架构重构（pipeline、policy、schema 分层）。
-- 持续维护更偏“项目拆解/理解”的文档。
-
-## 阅读入口
-
-- 项目拆解索引： [docs/README.md](./docs/README.md)
