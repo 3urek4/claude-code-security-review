@@ -59,6 +59,7 @@ This action is not hardened against prompt injection attacks and should only be 
 | `run-every-commit` | Run ClaudeCode on every commit (skips cache check). Warning: May increase false positives on PRs with many commits. | `false` | No |
 | `false-positive-filtering-instructions` | Path to custom false positive filtering instructions text file | None | No |
 | `custom-security-scan-instructions` | Path to custom security scan instructions text file to append to audit prompt | None | No |
+| `security-policy-file` | Path to versioned JSON policy file for scan/filter behavior (policy-as-code). | None | No |
 
 ### Action Outputs
 

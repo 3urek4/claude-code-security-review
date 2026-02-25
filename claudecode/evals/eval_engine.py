@@ -63,17 +63,17 @@ class EvaluationEngine:
             work_dir: Directory for cloning repositories
             verbose: Enable verbose logging
         """
-        # Use ~/code/audit as base directory like pr_audit does
-        if work_dir is None:
-            work_dir = os.path.expanduser("~/code/audit")
-        self.work_dir = work_dir
-        Path(self.work_dir).mkdir(parents=True, exist_ok=True)
-        
         self.verbose = verbose
         self.claude_api_key = os.environ.get('ANTHROPIC_API_KEY', '')
         
         if not self.claude_api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable required")
+
+        # Use ~/code/audit as base directory like pr_audit does
+        if work_dir is None:
+            work_dir = os.path.expanduser("~/code/audit")
+        self.work_dir = work_dir
+        Path(self.work_dir).mkdir(parents=True, exist_ok=True)
         
         # Repository locks for concurrent access
         self._repo_locks: Dict[str, threading.Lock] = {}

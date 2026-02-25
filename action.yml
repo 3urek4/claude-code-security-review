@@ -48,6 +48,11 @@ inputs:
     required: false
     default: ''
 
+  security-policy-file:
+    description: 'Path to JSON security policy file for versioned scan/filter behavior'
+    required: false
+    default: ''
+
 outputs:
   findings-count:
     description: 'Number of security findings'
@@ -186,6 +191,7 @@ runs:
         EXCLUDE_DIRECTORIES: ${{ inputs.exclude-directories }}
         FALSE_POSITIVE_FILTERING_INSTRUCTIONS: ${{ inputs.false-positive-filtering-instructions }}
         CUSTOM_SECURITY_SCAN_INSTRUCTIONS: ${{ inputs.custom-security-scan-instructions }}
+        SECURITY_POLICY_FILE: ${{ inputs.security-policy-file }}
         CLAUDE_MODEL: ${{ inputs.claude-model }}
         CLAUDECODE_TIMEOUT: ${{ inputs.claudecode-timeout }}
         ACTION_PATH: ${{ github.action_path }}

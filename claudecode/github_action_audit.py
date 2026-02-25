@@ -25,6 +25,11 @@ from claudecode.constants import (
     EXIT_GENERAL_ERROR,
     SUBPROCESS_TIMEOUT
 )
+from claudecode.audit_pipeline import (
+    SecurityAuditPipeline,
+    apply_findings_filter_with_exclusions,
+)
+from claudecode.security_policy import load_security_policy, PolicyValidationError
 from claudecode.logger import get_logger
 
 logger = get_logger(__name__)
@@ -467,38 +472,12 @@ def apply_findings_filter(findings_filter, original_findings: List[Dict[str, Any
     Returns:
         Tuple of (kept_findings, excluded_findings, analysis_summary)
     """
-    # Apply FindingsFilter
-    filter_success, filter_results, filter_stats = findings_filter.filter_findings(
-        original_findings, pr_context
+    return apply_findings_filter_with_exclusions(
+        findings_filter=findings_filter,
+        original_findings=original_findings,
+        pr_context=pr_context,
+        is_excluded=github_client._is_excluded,
     )
-    
-    if filter_success:
-        kept_findings = filter_results.get('filtered_findings', [])
-        excluded_findings = filter_results.get('excluded_findings', [])
-        analysis_summary = filter_results.get('analysis_summary', {})
-    else:
-        # Filtering failed, keep all findings
-        kept_findings = original_findings
-        excluded_findings = []
-        analysis_summary = {}
-    
-    # Apply final directory exclusion filtering
-    final_kept_findings = []
-    directory_excluded_findings = []
-    
-    for finding in kept_findings:
-        if _is_finding_in_excluded_directory(finding, github_client):
-            directory_excluded_findings.append(finding)
-        else:
-            final_kept_findings.append(finding)
-    
-    # Update excluded findings list
-    all_excluded_findings = excluded_findings + directory_excluded_findings
-    
-    # Update analysis summary with directory filtering stats
-    analysis_summary['directory_excluded_count'] = len(directory_excluded_findings)
-    
-    return final_kept_findings, all_excluded_findings, analysis_summary
 
 
 def _is_finding_in_excluded_directory(finding: Dict[str, Any], github_client: GitHubActionClient) -> bool:
@@ -518,6 +497,40 @@ def _is_finding_in_excluded_directory(finding: Dict[str, Any], github_client: Gi
     return github_client._is_excluded(file_path)
 
 
+def _read_optional_text_file(file_path: str, description: str) -> Optional[str]:
+    """Read optional UTF-8 text file, logging warnings when unreadable."""
+    if not file_path:
+        return None
+
+    path = Path(file_path)
+    if not path.exists():
+        return None
+
+    try:
+        content = path.read_text(encoding="utf-8")
+        logger.info("Loaded %s from %s", description, file_path)
+        return content
+    except Exception as exc:
+        logger.warning("Failed to read %s file %s: %s", description, file_path, exc)
+        return None
+
+
+def initialize_security_policy(
+    custom_scan_instructions: Optional[str] = None,
+    custom_filtering_instructions: Optional[str] = None,
+):
+    """Load and validate policy bundle used by pipeline stages."""
+    policy_file = os.environ.get("SECURITY_POLICY_FILE", "")
+    try:
+        return load_security_policy(
+            policy_file=policy_file or None,
+            custom_scan_instructions=custom_scan_instructions,
+            custom_filtering_instructions=custom_filtering_instructions,
+        )
+    except PolicyValidationError as exc:
+        raise ConfigurationError(f"Invalid security policy: {exc}") from exc
+
+
 def main():
     """Main execution function for GitHub Action."""
     try:
@@ -528,27 +541,23 @@ def main():
             print(json.dumps({'error': str(e)}))
             sys.exit(EXIT_CONFIGURATION_ERROR)
         
-        # Load custom filtering instructions if provided
-        custom_filtering_instructions = None
-        filtering_file = os.environ.get('FALSE_POSITIVE_FILTERING_INSTRUCTIONS', '')
-        if filtering_file and Path(filtering_file).exists():
-            try:
-                with open(filtering_file, 'r', encoding='utf-8') as f:
-                    custom_filtering_instructions = f.read()
-                    logger.info(f"Loaded custom filtering instructions from {filtering_file}")
-            except Exception as e:
-                logger.warning(f"Failed to read filtering instructions file {filtering_file}: {e}")
-        
-        # Load custom security scan instructions if provided
-        custom_scan_instructions = None
-        scan_file = os.environ.get('CUSTOM_SECURITY_SCAN_INSTRUCTIONS', '')
-        if scan_file and Path(scan_file).exists():
-            try:
-                with open(scan_file, 'r', encoding='utf-8') as f:
-                    custom_scan_instructions = f.read()
-                    logger.info(f"Loaded custom security scan instructions from {scan_file}")
-            except Exception as e:
-                logger.warning(f"Failed to read security scan instructions file {scan_file}: {e}")
+        custom_filtering_instructions = _read_optional_text_file(
+            os.environ.get("FALSE_POSITIVE_FILTERING_INSTRUCTIONS", ""),
+            "custom filtering instructions",
+        )
+        custom_scan_instructions = _read_optional_text_file(
+            os.environ.get("CUSTOM_SECURITY_SCAN_INSTRUCTIONS", ""),
+            "custom security scan instructions",
+        )
+
+        try:
+            policy = initialize_security_policy(
+                custom_scan_instructions=custom_scan_instructions,
+                custom_filtering_instructions=custom_filtering_instructions,
+            )
+        except ConfigurationError as e:
+            print(json.dumps({"error": str(e)}))
+            sys.exit(EXIT_CONFIGURATION_ERROR)
         
         # Initialize components
         try:
@@ -559,7 +568,7 @@ def main():
             
         # Initialize findings filter
         try:
-            findings_filter = initialize_findings_filter(custom_filtering_instructions)
+            findings_filter = initialize_findings_filter(policy.filtering_instructions)
         except ConfigurationError as e:
             print(json.dumps({'error': str(e)}))
             sys.exit(EXIT_CONFIGURATION_ERROR)
@@ -570,70 +579,28 @@ def main():
             print(json.dumps({'error': f'Claude Code not available: {claude_error}'}))
             sys.exit(EXIT_GENERAL_ERROR)
         
-        # Get PR data
-        try:
-            pr_data = github_client.get_pr_data(repo_name, pr_number)
-            pr_diff = github_client.get_pr_diff(repo_name, pr_number)
-        except Exception as e:
-            print(json.dumps({'error': f'Failed to fetch PR data: {str(e)}'}))
-            sys.exit(EXIT_GENERAL_ERROR)
-                
-        # Generate security audit prompt
-        prompt = get_security_audit_prompt(pr_data, pr_diff, custom_scan_instructions=custom_scan_instructions)
-        
-        # Run Claude Code security audit
-        # Get repo directory from environment or use current directory
         repo_path = os.environ.get('REPO_PATH')
         repo_dir = Path(repo_path) if repo_path else Path.cwd()
-        success, error_msg, results = claude_runner.run_security_audit(repo_dir, prompt)
-        
-        # If prompt is too long, retry without diff
-        if not success and error_msg == "PROMPT_TOO_LONG":
-            print(f"[Info] Prompt too long, retrying without diff. Original prompt length: {len(prompt)} characters", file=sys.stderr)
-            prompt_without_diff = get_security_audit_prompt(pr_data, pr_diff, include_diff=False, custom_scan_instructions=custom_scan_instructions)
-            print(f"[Info] New prompt length: {len(prompt_without_diff)} characters", file=sys.stderr)
-            success, error_msg, results = claude_runner.run_security_audit(repo_dir, prompt_without_diff)
-        
-        if not success:
-            print(json.dumps({'error': f'Security audit failed: {error_msg}'}))
-            sys.exit(EXIT_GENERAL_ERROR)
-        
-        # Filter findings to reduce false positives
-        original_findings = results.get('findings', [])
-        
-        # Prepare PR context for better filtering
-        pr_context = {
-            'repo_name': repo_name,
-            'pr_number': pr_number,
-            'title': pr_data.get('title', ''),
-            'description': pr_data.get('body', '')
-        }
-        
-        # Apply findings filter (including final directory exclusion)
-        kept_findings, excluded_findings, analysis_summary = apply_findings_filter(
-            findings_filter, original_findings, pr_context, github_client
+
+        pipeline = SecurityAuditPipeline(
+            github_client=github_client,
+            claude_runner=claude_runner,
+            findings_filter=findings_filter,
+            prompt_builder=get_security_audit_prompt,
+            policy=policy,
+            logger=logger,
         )
-        
-        # Prepare output
-        output = {
-            'pr_number': pr_number,
-            'repo': repo_name,
-            'findings': kept_findings,
-            'analysis_summary': results.get('analysis_summary', {}),
-            'filtering_summary': {
-                'total_original_findings': len(original_findings),
-                'excluded_findings': len(excluded_findings),
-                'kept_findings': len(kept_findings),
-                'filter_analysis': analysis_summary,
-                'excluded_findings_details': excluded_findings  # Include full details of what was filtered
-            }
-        }
+        pipeline_result = pipeline.run(repo_name=repo_name, pr_number=pr_number, repo_dir=repo_dir)
+        if not pipeline_result.success:
+            print(json.dumps({'error': pipeline_result.error_message}))
+            sys.exit(EXIT_GENERAL_ERROR)
+        output = pipeline_result.output or {}
         
         # Output JSON to stdout
         print(json.dumps(output, indent=2))
         
         # Exit with appropriate code
-        high_severity_count = len([f for f in kept_findings if f.get('severity', '').upper() == 'HIGH'])
+        high_severity_count = pipeline_result.high_severity_count
         sys.exit(EXIT_GENERAL_ERROR if high_severity_count > 0 else EXIT_SUCCESS)
         
     except Exception as e:
